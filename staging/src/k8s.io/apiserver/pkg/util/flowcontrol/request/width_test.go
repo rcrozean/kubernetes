@@ -28,29 +28,45 @@ import (
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
 )
 
+type workEstimateTestValues struct {
+	maxSeats                  uint64
+	initialSeatsExpected      uint64
+	finalSeatsExpected        uint64
+	additionalLatencyExpected time.Duration
+}
+
 func TestWorkEstimator(t *testing.T) {
 	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.WatchList, true)
+	defaultMaximumSeatsLimit := uint64(10)
+	defaultObjectsPerSeat := 100.0
+	customMaximumSeatsLimit := uint64(50)
+	customObjectsPerSeat := 500.0
 
-	defaultCfg := DefaultWorkEstimatorConfig()
+	defaultCfg := NewWorkEstimatorConfig(defaultMaximumSeatsLimit, defaultObjectsPerSeat)
+	customCfg := NewWorkEstimatorConfig(customMaximumSeatsLimit, customObjectsPerSeat)
 
 	tests := []struct {
-		name                      string
-		requestURI                string
-		requestInfo               *apirequest.RequestInfo
-		counts                    map[string]int64
-		countErr                  error
-		watchCount                int
-		maxSeats                  uint64
-		initialSeatsExpected      uint64
-		finalSeatsExpected        uint64
-		additionalLatencyExpected time.Duration
+		name                   string
+		requestURI             string
+		requestInfo            *apirequest.RequestInfo
+		counts                 map[string]int64
+		countErr               error
+		watchCount             int
+		defaultEsitmatorValues *workEstimateTestValues
+		customEsitmatorValues  *workEstimateTestValues
 	}{
 		{
-			name:                 "request has no RequestInfo",
-			requestURI:           "http://server/apis/",
-			requestInfo:          nil,
-			maxSeats:             10,
-			initialSeatsExpected: 10,
+			name:        "request has no RequestInfo",
+			requestURI:  "http://server/apis/",
+			requestInfo: nil,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             defaultMaximumSeatsLimit,
+				initialSeatsExpected: 10,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             customMaximumSeatsLimit,
+				initialSeatsExpected: 50,
+			},
 		},
 		{
 			name:       "request verb is not list",
@@ -58,8 +74,14 @@ func TestWorkEstimator(t *testing.T) {
 			requestInfo: &apirequest.RequestInfo{
 				Verb: "get",
 			},
-			maxSeats:             10,
-			initialSeatsExpected: 1,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             defaultMaximumSeatsLimit,
+				initialSeatsExpected: 1,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             customMaximumSeatsLimit,
+				initialSeatsExpected: 1,
+			},
 		},
 		{
 			name:       "request verb is list, conversion to ListOptions returns error",
@@ -72,8 +94,14 @@ func TestWorkEstimator(t *testing.T) {
 			counts: map[string]int64{
 				"events.foo.bar": 799,
 			},
-			maxSeats:             10,
-			initialSeatsExpected: 10,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             defaultMaximumSeatsLimit,
+				initialSeatsExpected: 10,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             customMaximumSeatsLimit,
+				initialSeatsExpected: 50,
+			},
 		},
 		{
 			name:       "request verb is list, has limit and resource version is 1",
@@ -86,8 +114,14 @@ func TestWorkEstimator(t *testing.T) {
 			counts: map[string]int64{
 				"events.foo.bar": 699,
 			},
-			maxSeats:             10,
-			initialSeatsExpected: 8,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             defaultMaximumSeatsLimit,
+				initialSeatsExpected: 8,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             customMaximumSeatsLimit,
+				initialSeatsExpected: 2,
+			},
 		},
 		{
 			name:       "request verb is list, limit not set",
@@ -100,8 +134,14 @@ func TestWorkEstimator(t *testing.T) {
 			counts: map[string]int64{
 				"events.foo.bar": 699,
 			},
-			maxSeats:             10,
-			initialSeatsExpected: 7,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             defaultMaximumSeatsLimit,
+				initialSeatsExpected: 7,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             customMaximumSeatsLimit,
+				initialSeatsExpected: 2,
+			},
 		},
 		{
 			name:       "request verb is list, resource version not set",
@@ -114,8 +154,14 @@ func TestWorkEstimator(t *testing.T) {
 			counts: map[string]int64{
 				"events.foo.bar": 699,
 			},
-			maxSeats:             10,
-			initialSeatsExpected: 8,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             defaultMaximumSeatsLimit,
+				initialSeatsExpected: 8,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             customMaximumSeatsLimit,
+				initialSeatsExpected: 2,
+			},
 		},
 		{
 			name:       "request verb is list, no query parameters, count known",
@@ -128,8 +174,14 @@ func TestWorkEstimator(t *testing.T) {
 			counts: map[string]int64{
 				"events.foo.bar": 399,
 			},
-			maxSeats:             10,
-			initialSeatsExpected: 8,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             defaultMaximumSeatsLimit,
+				initialSeatsExpected: 8,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             customMaximumSeatsLimit,
+				initialSeatsExpected: 2,
+			},
 		},
 		{
 			name:       "request verb is list, no query parameters, count not known",
@@ -139,9 +191,15 @@ func TestWorkEstimator(t *testing.T) {
 				APIGroup: "foo.bar",
 				Resource: "events",
 			},
-			countErr:             ObjectCountNotFoundErr,
-			maxSeats:             10,
-			initialSeatsExpected: 1,
+			countErr: ObjectCountNotFoundErr,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             defaultMaximumSeatsLimit,
+				initialSeatsExpected: 1,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             customMaximumSeatsLimit,
+				initialSeatsExpected: 1,
+			},
 		},
 		{
 			name:       "request verb is list, continuation is set",
@@ -154,8 +212,14 @@ func TestWorkEstimator(t *testing.T) {
 			counts: map[string]int64{
 				"events.foo.bar": 699,
 			},
-			maxSeats:             10,
-			initialSeatsExpected: 8,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             defaultMaximumSeatsLimit,
+				initialSeatsExpected: 8,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             customMaximumSeatsLimit,
+				initialSeatsExpected: 2,
+			},
 		},
 		{
 			name:       "request verb is list, resource version is zero",
@@ -168,8 +232,14 @@ func TestWorkEstimator(t *testing.T) {
 			counts: map[string]int64{
 				"events.foo.bar": 399,
 			},
-			maxSeats:             10,
-			initialSeatsExpected: 4,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             defaultMaximumSeatsLimit,
+				initialSeatsExpected: 4,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             customMaximumSeatsLimit,
+				initialSeatsExpected: 1,
+			},
 		},
 		{
 			name:       "request verb is list, resource version is zero, no limit",
@@ -182,7 +252,12 @@ func TestWorkEstimator(t *testing.T) {
 			counts: map[string]int64{
 				"events.foo.bar": 799,
 			},
-			initialSeatsExpected: 8,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				initialSeatsExpected: 8,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				initialSeatsExpected: 2,
+			},
 		},
 		{
 			name:       "request verb is list, resource version match is Exact",
@@ -195,8 +270,14 @@ func TestWorkEstimator(t *testing.T) {
 			counts: map[string]int64{
 				"events.foo.bar": 699,
 			},
-			maxSeats:             10,
-			initialSeatsExpected: 8,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             defaultMaximumSeatsLimit,
+				initialSeatsExpected: 8,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             customMaximumSeatsLimit,
+				initialSeatsExpected: 2,
+			},
 		},
 		{
 			name:       "request verb is list, resource version match is NotOlderThan, limit not specified",
@@ -209,8 +290,14 @@ func TestWorkEstimator(t *testing.T) {
 			counts: map[string]int64{
 				"events.foo.bar": 799,
 			},
-			maxSeats:             10,
-			initialSeatsExpected: 8,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             defaultMaximumSeatsLimit,
+				initialSeatsExpected: 8,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             customMaximumSeatsLimit,
+				initialSeatsExpected: 2,
+			},
 		},
 		{
 			name:       "request verb is list, maximum is capped",
@@ -223,8 +310,14 @@ func TestWorkEstimator(t *testing.T) {
 			counts: map[string]int64{
 				"events.foo.bar": 1999,
 			},
-			maxSeats:             10,
-			initialSeatsExpected: 10,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             defaultMaximumSeatsLimit,
+				initialSeatsExpected: 10,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             customMaximumSeatsLimit,
+				initialSeatsExpected: 4,
+			},
 		},
 		{
 			name:       "request verb is list, maximum is capped, lower max seats",
@@ -237,8 +330,14 @@ func TestWorkEstimator(t *testing.T) {
 			counts: map[string]int64{
 				"events.foo.bar": 1999,
 			},
-			maxSeats:             5,
-			initialSeatsExpected: 5,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             5,
+				initialSeatsExpected: 5,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             5,
+				initialSeatsExpected: 4,
+			},
 		},
 		{
 			name:       "request verb is list, list from cache, count not known",
@@ -248,9 +347,15 @@ func TestWorkEstimator(t *testing.T) {
 				APIGroup: "foo.bar",
 				Resource: "events",
 			},
-			countErr:             ObjectCountNotFoundErr,
-			maxSeats:             10,
-			initialSeatsExpected: 1,
+			countErr: ObjectCountNotFoundErr,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             defaultMaximumSeatsLimit,
+				initialSeatsExpected: 1,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             customMaximumSeatsLimit,
+				initialSeatsExpected: 1,
+			},
 		},
 		{
 			name:       "request verb is list, object count is stale",
@@ -263,9 +368,15 @@ func TestWorkEstimator(t *testing.T) {
 			counts: map[string]int64{
 				"events.foo.bar": 799,
 			},
-			countErr:             ObjectCountStaleErr,
-			maxSeats:             10,
-			initialSeatsExpected: 10,
+			countErr: ObjectCountStaleErr,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             defaultMaximumSeatsLimit,
+				initialSeatsExpected: 10,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             customMaximumSeatsLimit,
+				initialSeatsExpected: 50,
+			},
 		},
 		{
 			name:       "request verb is list, object count is not found",
@@ -275,9 +386,15 @@ func TestWorkEstimator(t *testing.T) {
 				APIGroup: "foo.bar",
 				Resource: "events",
 			},
-			countErr:             ObjectCountNotFoundErr,
-			maxSeats:             10,
-			initialSeatsExpected: 1,
+			countErr: ObjectCountNotFoundErr,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             defaultMaximumSeatsLimit,
+				initialSeatsExpected: 1,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             customMaximumSeatsLimit,
+				initialSeatsExpected: 1,
+			},
 		},
 		{
 			name:       "request verb is list, count getter throws unknown error",
@@ -287,9 +404,15 @@ func TestWorkEstimator(t *testing.T) {
 				APIGroup: "foo.bar",
 				Resource: "events",
 			},
-			countErr:             errors.New("unknown error"),
-			maxSeats:             10,
-			initialSeatsExpected: 10,
+			countErr: errors.New("unknown error"),
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             defaultMaximumSeatsLimit,
+				initialSeatsExpected: 10,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             customMaximumSeatsLimit,
+				initialSeatsExpected: 50,
+			},
 		},
 		{
 			name:       "request verb is list, metadata.name specified",
@@ -303,8 +426,14 @@ func TestWorkEstimator(t *testing.T) {
 			counts: map[string]int64{
 				"events.foo.bar": 799,
 			},
-			maxSeats:             10,
-			initialSeatsExpected: 1,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             defaultMaximumSeatsLimit,
+				initialSeatsExpected: 1,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             customMaximumSeatsLimit,
+				initialSeatsExpected: 1,
+			},
 		},
 		{
 			name:       "request verb is list, metadata.name, resourceVersion and limit specified",
@@ -318,8 +447,14 @@ func TestWorkEstimator(t *testing.T) {
 			counts: map[string]int64{
 				"events.foo.bar": 799,
 			},
-			maxSeats:             10,
-			initialSeatsExpected: 1,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             defaultMaximumSeatsLimit,
+				initialSeatsExpected: 1,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:             customMaximumSeatsLimit,
+				initialSeatsExpected: 1,
+			},
 		},
 		{
 			name:       "request verb is watch, sendInitialEvents is nil",
@@ -332,7 +467,12 @@ func TestWorkEstimator(t *testing.T) {
 			counts: map[string]int64{
 				"events.foo.bar": 799,
 			},
-			initialSeatsExpected: minimumSeats,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				initialSeatsExpected: minimumSeats,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				initialSeatsExpected: minimumSeats,
+			},
 		},
 		{
 			name:       "request verb is watch, sendInitialEvents is false",
@@ -345,7 +485,12 @@ func TestWorkEstimator(t *testing.T) {
 			counts: map[string]int64{
 				"events.foo.bar": 799,
 			},
-			initialSeatsExpected: minimumSeats,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				initialSeatsExpected: minimumSeats,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				initialSeatsExpected: minimumSeats,
+			},
 		},
 		{
 			name:       "request verb is watch, sendInitialEvents is true",
@@ -358,7 +503,12 @@ func TestWorkEstimator(t *testing.T) {
 			counts: map[string]int64{
 				"events.foo.bar": 799,
 			},
-			initialSeatsExpected: 8,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				initialSeatsExpected: 8,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				initialSeatsExpected: 2,
+			},
 		},
 		{
 			name:       "request verb is create, no watches",
@@ -368,10 +518,18 @@ func TestWorkEstimator(t *testing.T) {
 				APIGroup: "foo.bar",
 				Resource: "foos",
 			},
-			maxSeats:                  10,
-			initialSeatsExpected:      1,
-			finalSeatsExpected:        0,
-			additionalLatencyExpected: 0,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:                  defaultMaximumSeatsLimit,
+				initialSeatsExpected:      1,
+				finalSeatsExpected:        0,
+				additionalLatencyExpected: 0,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:                  customMaximumSeatsLimit,
+				initialSeatsExpected:      1,
+				finalSeatsExpected:        0,
+				additionalLatencyExpected: 0,
+			},
 		},
 		{
 			name:       "request verb is create, watches registered",
@@ -381,11 +539,19 @@ func TestWorkEstimator(t *testing.T) {
 				APIGroup: "foo.bar",
 				Resource: "foos",
 			},
-			watchCount:                29,
-			maxSeats:                  10,
-			initialSeatsExpected:      1,
-			finalSeatsExpected:        3,
-			additionalLatencyExpected: 5 * time.Millisecond,
+			watchCount: 29,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:                  defaultMaximumSeatsLimit,
+				initialSeatsExpected:      1,
+				finalSeatsExpected:        3,
+				additionalLatencyExpected: 5 * time.Millisecond,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:                  customMaximumSeatsLimit,
+				initialSeatsExpected:      1,
+				finalSeatsExpected:        3,
+				additionalLatencyExpected: 5 * time.Millisecond,
+			},
 		},
 		{
 			name:       "request verb is create, watches registered, no additional latency",
@@ -395,11 +561,19 @@ func TestWorkEstimator(t *testing.T) {
 				APIGroup: "foo.bar",
 				Resource: "foos",
 			},
-			watchCount:                5,
-			maxSeats:                  10,
-			initialSeatsExpected:      1,
-			finalSeatsExpected:        0,
-			additionalLatencyExpected: 0,
+			watchCount: 5,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:                  defaultMaximumSeatsLimit,
+				initialSeatsExpected:      1,
+				finalSeatsExpected:        0,
+				additionalLatencyExpected: 0,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:                  customMaximumSeatsLimit,
+				initialSeatsExpected:      1,
+				finalSeatsExpected:        0,
+				additionalLatencyExpected: 0,
+			},
 		},
 		{
 			name:       "request verb is create, watches registered, maximum is capped",
@@ -409,11 +583,19 @@ func TestWorkEstimator(t *testing.T) {
 				APIGroup: "foo.bar",
 				Resource: "foos",
 			},
-			watchCount:                199,
-			maxSeats:                  10,
-			initialSeatsExpected:      1,
-			finalSeatsExpected:        10,
-			additionalLatencyExpected: 10 * time.Millisecond,
+			watchCount: 199,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:                  defaultMaximumSeatsLimit,
+				initialSeatsExpected:      1,
+				finalSeatsExpected:        10,
+				additionalLatencyExpected: 10 * time.Millisecond,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:                  customMaximumSeatsLimit,
+				initialSeatsExpected:      1,
+				finalSeatsExpected:        20,
+				additionalLatencyExpected: 5 * time.Millisecond,
+			},
 		},
 		{
 			name:       "request verb is update, no watches",
@@ -423,10 +605,18 @@ func TestWorkEstimator(t *testing.T) {
 				APIGroup: "foo.bar",
 				Resource: "foos",
 			},
-			maxSeats:                  10,
-			initialSeatsExpected:      1,
-			finalSeatsExpected:        0,
-			additionalLatencyExpected: 0,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:                  defaultMaximumSeatsLimit,
+				initialSeatsExpected:      1,
+				finalSeatsExpected:        0,
+				additionalLatencyExpected: 0,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:                  customMaximumSeatsLimit,
+				initialSeatsExpected:      1,
+				finalSeatsExpected:        0,
+				additionalLatencyExpected: 0,
+			},
 		},
 		{
 			name:       "request verb is update, watches registered",
@@ -436,11 +626,19 @@ func TestWorkEstimator(t *testing.T) {
 				APIGroup: "foo.bar",
 				Resource: "foos",
 			},
-			watchCount:                29,
-			maxSeats:                  10,
-			initialSeatsExpected:      1,
-			finalSeatsExpected:        3,
-			additionalLatencyExpected: 5 * time.Millisecond,
+			watchCount: 29,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:                  defaultMaximumSeatsLimit,
+				initialSeatsExpected:      1,
+				finalSeatsExpected:        3,
+				additionalLatencyExpected: 5 * time.Millisecond,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:                  customMaximumSeatsLimit,
+				initialSeatsExpected:      1,
+				finalSeatsExpected:        3,
+				additionalLatencyExpected: 5 * time.Millisecond,
+			},
 		},
 		{
 			name:       "request verb is patch, no watches",
@@ -450,10 +648,18 @@ func TestWorkEstimator(t *testing.T) {
 				APIGroup: "foo.bar",
 				Resource: "foos",
 			},
-			maxSeats:                  10,
-			initialSeatsExpected:      1,
-			finalSeatsExpected:        0,
-			additionalLatencyExpected: 0,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:                  defaultMaximumSeatsLimit,
+				initialSeatsExpected:      1,
+				finalSeatsExpected:        0,
+				additionalLatencyExpected: 0,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:                  customMaximumSeatsLimit,
+				initialSeatsExpected:      1,
+				finalSeatsExpected:        0,
+				additionalLatencyExpected: 0,
+			},
 		},
 		{
 			name:       "request verb is patch, watches registered",
@@ -463,11 +669,19 @@ func TestWorkEstimator(t *testing.T) {
 				APIGroup: "foo.bar",
 				Resource: "foos",
 			},
-			watchCount:                29,
-			maxSeats:                  10,
-			initialSeatsExpected:      1,
-			finalSeatsExpected:        3,
-			additionalLatencyExpected: 5 * time.Millisecond,
+			watchCount: 29,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:                  defaultMaximumSeatsLimit,
+				initialSeatsExpected:      1,
+				finalSeatsExpected:        3,
+				additionalLatencyExpected: 5 * time.Millisecond,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:                  customMaximumSeatsLimit,
+				initialSeatsExpected:      1,
+				finalSeatsExpected:        3,
+				additionalLatencyExpected: 5 * time.Millisecond,
+			},
 		},
 		{
 			name:       "request verb is patch, watches registered, lower max seats",
@@ -477,11 +691,19 @@ func TestWorkEstimator(t *testing.T) {
 				APIGroup: "foo.bar",
 				Resource: "foos",
 			},
-			watchCount:                100,
-			maxSeats:                  5,
-			initialSeatsExpected:      1,
-			finalSeatsExpected:        5,
-			additionalLatencyExpected: 10 * time.Millisecond,
+			watchCount: 100,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:                  5,
+				initialSeatsExpected:      1,
+				finalSeatsExpected:        5,
+				additionalLatencyExpected: 10 * time.Millisecond,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:                  5,
+				initialSeatsExpected:      1,
+				finalSeatsExpected:        5,
+				additionalLatencyExpected: 10 * time.Millisecond,
+			},
 		},
 		{
 			name:       "request verb is delete, no watches",
@@ -491,10 +713,18 @@ func TestWorkEstimator(t *testing.T) {
 				APIGroup: "foo.bar",
 				Resource: "foos",
 			},
-			maxSeats:                  10,
-			initialSeatsExpected:      1,
-			finalSeatsExpected:        0,
-			additionalLatencyExpected: 0,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:                  defaultMaximumSeatsLimit,
+				initialSeatsExpected:      1,
+				finalSeatsExpected:        0,
+				additionalLatencyExpected: 0,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:                  customMaximumSeatsLimit,
+				initialSeatsExpected:      1,
+				finalSeatsExpected:        0,
+				additionalLatencyExpected: 0,
+			},
 		},
 		{
 			name:       "request verb is delete, watches registered",
@@ -504,11 +734,19 @@ func TestWorkEstimator(t *testing.T) {
 				APIGroup: "foo.bar",
 				Resource: "foos",
 			},
-			watchCount:                29,
-			maxSeats:                  10,
-			initialSeatsExpected:      1,
-			finalSeatsExpected:        3,
-			additionalLatencyExpected: 5 * time.Millisecond,
+			watchCount: 29,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:                  defaultMaximumSeatsLimit,
+				initialSeatsExpected:      1,
+				finalSeatsExpected:        3,
+				additionalLatencyExpected: 5 * time.Millisecond,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:                  customMaximumSeatsLimit,
+				initialSeatsExpected:      1,
+				finalSeatsExpected:        3,
+				additionalLatencyExpected: 5 * time.Millisecond,
+			},
 		},
 		{
 			name:       "creating token for service account",
@@ -519,11 +757,19 @@ func TestWorkEstimator(t *testing.T) {
 				Resource:    "serviceaccounts",
 				Subresource: "token",
 			},
-			watchCount:                5777,
-			maxSeats:                  10,
-			initialSeatsExpected:      1,
-			finalSeatsExpected:        0,
-			additionalLatencyExpected: 0,
+			watchCount: 5777,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:                  defaultMaximumSeatsLimit,
+				initialSeatsExpected:      1,
+				finalSeatsExpected:        0,
+				additionalLatencyExpected: 0,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:                  customMaximumSeatsLimit,
+				initialSeatsExpected:      1,
+				finalSeatsExpected:        0,
+				additionalLatencyExpected: 0,
+			},
 		},
 		{
 			name:       "creating service account",
@@ -533,11 +779,19 @@ func TestWorkEstimator(t *testing.T) {
 				APIGroup: "v1",
 				Resource: "serviceaccounts",
 			},
-			watchCount:                1000,
-			maxSeats:                  10,
-			initialSeatsExpected:      1,
-			finalSeatsExpected:        10,
-			additionalLatencyExpected: 50 * time.Millisecond,
+			watchCount: 1000,
+			defaultEsitmatorValues: &workEstimateTestValues{
+				maxSeats:                  defaultMaximumSeatsLimit,
+				initialSeatsExpected:      1,
+				finalSeatsExpected:        10,
+				additionalLatencyExpected: 50 * time.Millisecond,
+			},
+			customEsitmatorValues: &workEstimateTestValues{
+				maxSeats:                  customMaximumSeatsLimit,
+				initialSeatsExpected:      1,
+				finalSeatsExpected:        50,
+				additionalLatencyExpected: 10 * time.Millisecond,
+			},
 		},
 	}
 
@@ -553,11 +807,15 @@ func TestWorkEstimator(t *testing.T) {
 			watchCountsFn := func(_ *apirequest.RequestInfo) int {
 				return test.watchCount
 			}
-			maxSeatsFn := func(_ string) uint64 {
-				return test.maxSeats
+			defaultMaxSeatsFn := func(_ string) uint64 {
+				return test.defaultEsitmatorValues.maxSeats
+			}
+			customMaxSeatsFn := func(_ string) uint64 {
+				return test.customEsitmatorValues.maxSeats
 			}
 
-			estimator := NewWorkEstimator(countsFn, watchCountsFn, defaultCfg, maxSeatsFn)
+			defaultEstimator := NewWorkEstimator(countsFn, watchCountsFn, defaultCfg, defaultMaxSeatsFn)
+			customEstimator := NewWorkEstimator(countsFn, watchCountsFn, customCfg, customMaxSeatsFn)
 
 			req, err := http.NewRequest("GET", test.requestURI, nil)
 			if err != nil {
@@ -568,15 +826,26 @@ func TestWorkEstimator(t *testing.T) {
 				req = req.WithContext(apirequest.WithRequestInfo(req.Context(), test.requestInfo))
 			}
 
-			workestimateGot := estimator.EstimateWork(req, "testFS", "testPL")
-			if test.initialSeatsExpected != workestimateGot.InitialSeats {
-				t.Errorf("Expected work estimate to match: %d initial seats, but got: %d", test.initialSeatsExpected, workestimateGot.InitialSeats)
+			workestimateGot := defaultEstimator.EstimateWork(req, "testFS", "testPL")
+			if test.defaultEsitmatorValues.initialSeatsExpected != workestimateGot.InitialSeats {
+				t.Errorf("[DEFAULT] Expected work estimate to match: %d initial seats, but got: %d", test.defaultEsitmatorValues.initialSeatsExpected, workestimateGot.InitialSeats)
 			}
-			if test.finalSeatsExpected != workestimateGot.FinalSeats {
-				t.Errorf("Expected work estimate to match: %d final seats, but got: %d", test.finalSeatsExpected, workestimateGot.FinalSeats)
+			if test.defaultEsitmatorValues.finalSeatsExpected != workestimateGot.FinalSeats {
+				t.Errorf("[DEFAULT] Expected work estimate to match: %d final seats, but got: %d", test.defaultEsitmatorValues.finalSeatsExpected, workestimateGot.FinalSeats)
 			}
-			if test.additionalLatencyExpected != workestimateGot.AdditionalLatency {
-				t.Errorf("Expected work estimate to match additional latency: %v, but got: %v", test.additionalLatencyExpected, workestimateGot.AdditionalLatency)
+			if test.defaultEsitmatorValues.additionalLatencyExpected != workestimateGot.AdditionalLatency {
+				t.Errorf("[DEFAULT] Expected work estimate to match additional latency: %v, but got: %v", test.defaultEsitmatorValues.additionalLatencyExpected, workestimateGot.AdditionalLatency)
+			}
+
+			workestimateGot = customEstimator.EstimateWork(req, "testFS", "testPL")
+			if test.customEsitmatorValues.initialSeatsExpected != workestimateGot.InitialSeats {
+				t.Errorf("[CUSTOM] Expected work estimate to match: %d initial seats, but got: %d", test.customEsitmatorValues.initialSeatsExpected, workestimateGot.InitialSeats)
+			}
+			if test.customEsitmatorValues.finalSeatsExpected != workestimateGot.FinalSeats {
+				t.Errorf("[CUSTOM] Expected work estimate to match: %d final seats, but got: %d", test.customEsitmatorValues.finalSeatsExpected, workestimateGot.FinalSeats)
+			}
+			if test.customEsitmatorValues.additionalLatencyExpected != workestimateGot.AdditionalLatency {
+				t.Errorf("[CUSTOM] Expected work estimate to match additional latency: %v, but got: %v", test.customEsitmatorValues.additionalLatencyExpected, workestimateGot.AdditionalLatency)
 			}
 		})
 	}

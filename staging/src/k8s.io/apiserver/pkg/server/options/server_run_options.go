@@ -48,11 +48,23 @@ const (
 type ServerRunOptions struct {
 	AdvertiseAddress net.IP
 
-	CorsAllowedOriginList        []string
-	HSTSDirectives               []string
-	ExternalHost                 string
-	MaxRequestsInFlight          int
-	MaxMutatingRequestsInFlight  int
+	CorsAllowedOriginList       []string
+	HSTSDirectives              []string
+	ExternalHost                string
+	MaxRequestsInFlight         int
+	MaxMutatingRequestsInFlight int
+	// MaximumSeatsLimit is an upper limit on the max seats a request can occupy.
+	//
+	// NOTE: work_estimate_seats_samples metric uses the value of maximumSeats
+	// as the upper bound, so when we change maximumSeats we also
+	// update the buckets of the metric.
+	MaximumSeatsLimit uint64
+	// Currently, list work estimator uses a rough estimate is to allocate one seat to each 100 obejcts that
+	// will be processed by the list request.
+	// ObjectsPerSeat is the number of elemnts resulting in the request occupying another seat. The default is 100 objects
+	// per seat
+	ObjectsPerSeat float64
+
 	RequestTimeout               time.Duration
 	GoawayChance                 float64
 	LivezGracePeriod             time.Duration
@@ -125,6 +137,8 @@ func NewServerRunOptionsForComponent(componentName string, componentGlobalsRegis
 	return &ServerRunOptions{
 		MaxRequestsInFlight:                 defaults.MaxRequestsInFlight,
 		MaxMutatingRequestsInFlight:         defaults.MaxMutatingRequestsInFlight,
+		MaximumSeatsLimit:                   defaults.MaximumSeatsLimit,
+		ObjectsPerSeat:                      defaults.ObjectsPerSeat,
 		RequestTimeout:                      defaults.RequestTimeout,
 		LivezGracePeriod:                    defaults.LivezGracePeriod,
 		MinRequestTimeout:                   defaults.MinRequestTimeout,
@@ -149,6 +163,8 @@ func (s *ServerRunOptions) ApplyTo(c *server.Config) error {
 	c.ExternalAddress = s.ExternalHost
 	c.MaxRequestsInFlight = s.MaxRequestsInFlight
 	c.MaxMutatingRequestsInFlight = s.MaxMutatingRequestsInFlight
+	c.MaximumSeatsLimit = s.MaximumSeatsLimit
+	c.ObjectsPerSeat = s.ObjectsPerSeat
 	c.LivezGracePeriod = s.LivezGracePeriod
 	c.RequestTimeout = s.RequestTimeout
 	c.GoawayChance = s.GoawayChance
@@ -199,6 +215,14 @@ func (s *ServerRunOptions) Validate() []error {
 	}
 	if s.MaxMutatingRequestsInFlight < 0 {
 		errors = append(errors, fmt.Errorf("--max-mutating-requests-inflight can not be negative value"))
+	}
+
+	if s.MaximumSeatsLimit < 0 {
+		errors = append(errors, fmt.Errorf("--maximum-seats-limit can not be negative value"))
+	}
+
+	if s.ObjectsPerSeat < 0 {
+		errors = append(errors, fmt.Errorf("--objects-per-seat can not be negative value"))
 	}
 
 	if s.RequestTimeout.Nanoseconds() < 0 {
@@ -358,6 +382,22 @@ func (s *ServerRunOptions) AddUniversalFlags(fs *pflag.FlagSet) {
 		"(which must be positive) if --enable-priority-and-fairness is true. "+
 		"Otherwise, this flag limits the maximum number of mutating requests in flight, "+
 		"or a zero value disables the limit completely.")
+
+	fs.Uint64Var(&s.MaximumSeatsLimit, "maximum-seats-limit", s.MaximumSeatsLimit, ""+
+		"An optional field, which must be positive, for configuring how many seats a list request can be penalized in "+
+		"the list work estimator. This and objects-per-seat are multiplied to calculate the number of objects, which once surpassed, will "+
+		"result in the list request occupying the maximum-seats-limit.")
+
+	fs.Float64Var(&s.ObjectsPerSeat, "objects-per-seat", s.ObjectsPerSeat, ""+
+		"An optional field, which must be positive, for configuring the number of objects per seat the list work estimator will assign to "+
+		"a list request. This and maximum-seats-limit are multiplied to calculate the number of objects, which once surpassed, will "+
+		"result in the list request occupying the maximum-seats-limit.")
+
+	// Currently, list work estimator uses a rough estimate is to allocate one seat to each 100 obejcts that
+	// will be processed by the list request.
+	// To make this more configurable allowing ObjectsPerSeat to be configurable flags
+	// ObjectsPerSeat is the number of elemnts resulting in the request occupying another seat. The default is 100 objects
+	// per seat
 
 	fs.DurationVar(&s.RequestTimeout, "request-timeout", s.RequestTimeout, ""+
 		"An optional field indicating the duration a handler must keep a request open before timing "+

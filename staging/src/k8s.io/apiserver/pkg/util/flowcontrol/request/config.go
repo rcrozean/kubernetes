@@ -24,8 +24,6 @@ import (
 
 const (
 	minimumSeats                = 1
-	maximumSeatsLimit           = 10
-	objectsPerSeat              = 100.0
 	watchesPerSeat              = 10.0
 	enableMutatingWorkEstimator = true
 )
@@ -63,19 +61,26 @@ type MutatingWorkEstimatorConfig struct {
 	WatchesPerSeat          float64         `json:"watchesPerSeat,omitempty"`
 }
 
-// DefaultWorkEstimatorConfig creates a new WorkEstimatorConfig with default values.
-func DefaultWorkEstimatorConfig() *WorkEstimatorConfig {
-	return &WorkEstimatorConfig{
+// NewWorkEstimatorConfig starts by creating a DefaultWorkEstimatorConfig
+// and updates the config with any of the passed options
+func NewWorkEstimatorConfig(maximumSeatsLimit uint64, objectsPerSeat float64) *WorkEstimatorConfig {
+	weCfg := &WorkEstimatorConfig{
 		MinimumSeats:                minimumSeats,
 		MaximumSeatsLimit:           maximumSeatsLimit,
-		ListWorkEstimatorConfig:     defaultListWorkEstimatorConfig(),
+		ListWorkEstimatorConfig:     newListWorkEstimatorConfig(objectsPerSeat),
 		MutatingWorkEstimatorConfig: defaultMutatingWorkEstimatorConfig(),
 	}
+
+	return weCfg
 }
 
-// defaultListWorkEstimatorConfig creates a new ListWorkEstimatorConfig with default values.
-func defaultListWorkEstimatorConfig() *ListWorkEstimatorConfig {
-	return &ListWorkEstimatorConfig{ObjectsPerSeat: objectsPerSeat}
+// newListWorkEstimatorConfig creates a new ListWorkEstimatorConfig with values passed by
+// flags ...
+// or a defaultListWorkEstimatorConfig.
+func newListWorkEstimatorConfig(objectsPerSeat float64) *ListWorkEstimatorConfig {
+	return &ListWorkEstimatorConfig{
+		ObjectsPerSeat: objectsPerSeat,
+	}
 }
 
 // defaultMutatingWorkEstimatorConfig creates a new MutatingWorkEstimatorConfig with default values.

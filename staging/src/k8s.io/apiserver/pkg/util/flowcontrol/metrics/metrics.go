@@ -326,7 +326,7 @@ var (
 			Help:      "Number of estimated seats (maximum of initial and final seats) associated with requests in API Priority and Fairness",
 			// the upper bound comes from the maximum number of seats a request
 			// can occupy which is currently set at 10.
-			Buckets:        []float64{1, 2, 4, 10},
+			Buckets:        []float64{1, 2, 4, 10, 20, 40, 80, 160, 320},
 			StabilityLevel: compbasemetrics.ALPHA,
 		},
 		[]string{priorityLevel, flowSchema},
@@ -507,10 +507,12 @@ func (io *indexOnce) getGauge() RatioedGauge {
 	return io.gauge
 }
 
-var waitingReadonly = indexOnce{labelValues: []string{LabelValueWaiting, epmetrics.ReadOnlyKind}}
-var executingReadonly = indexOnce{labelValues: []string{LabelValueExecuting, epmetrics.ReadOnlyKind}}
-var waitingMutating = indexOnce{labelValues: []string{LabelValueWaiting, epmetrics.MutatingKind}}
-var executingMutating = indexOnce{labelValues: []string{LabelValueExecuting, epmetrics.MutatingKind}}
+var (
+	waitingReadonly   = indexOnce{labelValues: []string{LabelValueWaiting, epmetrics.ReadOnlyKind}}
+	executingReadonly = indexOnce{labelValues: []string{LabelValueExecuting, epmetrics.ReadOnlyKind}}
+	waitingMutating   = indexOnce{labelValues: []string{LabelValueWaiting, epmetrics.MutatingKind}}
+	executingMutating = indexOnce{labelValues: []string{LabelValueExecuting, epmetrics.MutatingKind}}
+)
 
 // GetWaitingReadonlyConcurrency returns the gauge of number of readonly requests waiting / limit on those.
 var GetWaitingReadonlyConcurrency = waitingReadonly.getGauge

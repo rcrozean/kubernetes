@@ -134,6 +134,8 @@ func TestAddFlags(t *testing.T) {
 			CorsAllowedOriginList:        []string{"10.10.10.100", "10.10.10.200"},
 			MaxRequestsInFlight:          400,
 			MaxMutatingRequestsInFlight:  200,
+			MaximumSeatsLimit:            10,
+			ObjectsPerSeat:               100.0,
 			RequestTimeout:               time.Duration(2) * time.Minute,
 			MinRequestTimeout:            1800,
 			StorageInitializationTimeout: time.Minute,
@@ -319,7 +321,6 @@ func TestAddFlags(t *testing.T) {
 }
 
 func TestCompleteForServiceAccount(t *testing.T) {
-
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		panic("Error while generating first RSA key")
@@ -480,7 +481,6 @@ func TestCompleteForServiceAccount(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.desc, func(t *testing.T) {
-
 			options := NewOptions()
 			if tc.externalSigner {
 				// create and start mock signer.

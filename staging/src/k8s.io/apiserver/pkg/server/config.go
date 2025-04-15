@@ -256,6 +256,18 @@ type Config struct {
 	// MaxMutatingRequestsInFlight is the maximum number of parallel mutating requests. Every further
 	// request has to wait.
 	MaxMutatingRequestsInFlight int
+	// MaximumSeatsLimit is an upper limit on the max seats a request can occupy.
+	//
+	// NOTE: work_estimate_seats_samples metric uses the value of maximumSeats
+	// as the upper bound, so when we change maximumSeats we also
+	// update the buckets of the metric.
+	MaximumSeatsLimit uint64
+	// Currently, list work estimator uses a rough estimate to allocate one seat to each 100 obejcts that
+	// will be processed by the list request.
+	// To make this more configurable allowing ObjectsPerSeat to be configurable flags
+	// ObjectsPerSeat is the number of elemnts resulting in the request occupying another seat. The default is 100 objects
+	// per seat
+	ObjectsPerSeat float64
 	// Predicate which is true for paths of long-running http requests
 	LongRunningFunc apirequest.LongRunningRequestCheck
 
@@ -441,6 +453,8 @@ func NewConfig(codecs serializer.CodecFactory) *Config {
 		EnableMetrics:                  true,
 		MaxRequestsInFlight:            400,
 		MaxMutatingRequestsInFlight:    200,
+		MaximumSeatsLimit:              10,
+		ObjectsPerSeat:                 100.0,
 		RequestTimeout:                 time.Duration(60) * time.Second,
 		MinRequestTimeout:              1800,
 		StorageInitializationTimeout:   time.Minute,
@@ -1019,9 +1033,13 @@ func DefaultBuildHandlerChain(apiHandler http.Handler, c *Config) http.Handler {
 	handler = filterlatency.TrackStarted(handler, c.TracerProvider, "authorization")
 
 	if c.FlowControl != nil {
-		workEstimatorCfg := flowcontrolrequest.DefaultWorkEstimatorConfig()
+		workEstimatorCfg := flowcontrolrequest.NewWorkEstimatorConfig(c.MaximumSeatsLimit, c.ObjectsPerSeat)
 		requestWorkEstimator := flowcontrolrequest.NewWorkEstimator(
-			c.StorageObjectCountTracker.Get, c.FlowControl.GetInterestedWatchCount, workEstimatorCfg, c.FlowControl.GetMaxSeats)
+			c.StorageObjectCountTracker.Get,
+			c.FlowControl.GetInterestedWatchCount,
+			workEstimatorCfg,
+			c.FlowControl.GetMaxSeats,
+		)
 		handler = filterlatency.TrackCompleted(handler)
 		handler = genericfilters.WithPriorityAndFairness(handler, c.LongRunningFunc, c.FlowControl, requestWorkEstimator, c.RequestTimeout/4)
 		handler = filterlatency.TrackStarted(handler, c.TracerProvider, "priorityandfairness")
@@ -1179,7 +1197,7 @@ func AuthorizeClientBearerToken(loopback *restclient.Config, authn *Authenticati
 	}
 
 	privilegedLoopbackToken := loopback.BearerToken
-	var uid = uuid.New().String()
+	uid := uuid.New().String()
 	tokens := make(map[string]*user.DefaultInfo)
 	tokens[privilegedLoopbackToken] = &user.DefaultInfo{
 		Name:   user.APIServerUser,

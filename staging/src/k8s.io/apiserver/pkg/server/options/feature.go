@@ -76,7 +76,6 @@ func (o *FeatureOptions) ApplyTo(c *server.Config, clientset kubernetes.Interfac
 		}
 		if c.MaxRequestsInFlight+c.MaxMutatingRequestsInFlight <= 0 {
 			return fmt.Errorf("invalid configuration: MaxRequestsInFlight=%d and MaxMutatingRequestsInFlight=%d; they must add up to something positive", c.MaxRequestsInFlight, c.MaxMutatingRequestsInFlight)
-
 		}
 		c.FlowControl = utilflowcontrol.New(
 			informers,
