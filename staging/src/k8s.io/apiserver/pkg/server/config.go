@@ -1019,7 +1019,7 @@ func DefaultBuildHandlerChain(apiHandler http.Handler, c *Config) http.Handler {
 	handler = filterlatency.TrackStarted(handler, c.TracerProvider, "authorization")
 
 	if c.FlowControl != nil {
-		workEstimatorCfg := flowcontrolrequest.DefaultWorkEstimatorConfig()
+		workEstimatorCfg := flowcontrolrequest.NewWorkEstimatorConfig()
 		requestWorkEstimator := flowcontrolrequest.NewWorkEstimator(
 			c.StorageObjectCountTracker.Get, c.FlowControl.GetInterestedWatchCount, workEstimatorCfg, c.FlowControl.GetMaxSeats)
 		handler = filterlatency.TrackCompleted(handler)

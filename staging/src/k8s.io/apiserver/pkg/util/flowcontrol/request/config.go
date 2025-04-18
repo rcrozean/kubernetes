@@ -17,17 +17,23 @@ limitations under the License.
 package request
 
 import (
+	"os"
+	"strconv"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/klog/v2"
 )
 
 const (
 	minimumSeats                = 1
-	maximumSeatsLimit           = 10
-	objectsPerSeat              = 100.0
+	defaultMaximumSeatsLimit    = 10
+	defaultObjectsPerSeat       = 100.0
 	watchesPerSeat              = 10.0
 	enableMutatingWorkEstimator = true
+	maxSeatsLimitEnvVar         = "APF_MAX_SEATS_LIMIT"
+	objectsPerSeatEnvVar        = "APF_OBJECTS_PER_SEAT"
+	failedToParseErr            = "failed to parse env var for key %q with value %q: %v"
 )
 
 var eventAdditionalDuration = 5 * time.Millisecond
@@ -63,18 +69,43 @@ type MutatingWorkEstimatorConfig struct {
 	WatchesPerSeat          float64         `json:"watchesPerSeat,omitempty"`
 }
 
-// DefaultWorkEstimatorConfig creates a new WorkEstimatorConfig with default values.
-func DefaultWorkEstimatorConfig() *WorkEstimatorConfig {
+func NewWorkEstimatorConfig() *WorkEstimatorConfig {
+	maxSeatsLimit, envVal, err := getAndSetFromEnv(
+		maxSeatsLimitEnvVar,
+		defaultMaximumSeatsLimit,
+		func(s string) (uint64, error) { return strconv.ParseUint(s, 10, 64) },
+	)
+	if err != nil {
+		klog.Fatalf(failedToParseErr, maxSeatsLimitEnvVar, envVal, err)
+	}
+
+	objectsPerSeat, envVal, err := getAndSetFromEnv(
+		objectsPerSeatEnvVar,
+		defaultObjectsPerSeat,
+		func(s string) (float64, error) { return strconv.ParseFloat(s, 64) },
+	)
+	if err != nil {
+		klog.Fatalf(failedToParseErr, objectsPerSeatEnvVar, envVal, err)
+	}
+
 	return &WorkEstimatorConfig{
 		MinimumSeats:                minimumSeats,
-		MaximumSeatsLimit:           maximumSeatsLimit,
-		ListWorkEstimatorConfig:     defaultListWorkEstimatorConfig(),
+		MaximumSeatsLimit:           maxSeatsLimit,
+		ListWorkEstimatorConfig:     newListWorkEstimatorConfig(objectsPerSeat),
 		MutatingWorkEstimatorConfig: defaultMutatingWorkEstimatorConfig(),
 	}
 }
 
+func getAndSetFromEnv[T any](key string, defaultValue T, converter func(string) (T, error)) (T, string, error) {
+	if value, exists := os.LookupEnv(key); exists && value != "" {
+		cVal, err := converter(value)
+		return cVal, value, err
+	}
+	return defaultValue, "", nil
+}
+
 // defaultListWorkEstimatorConfig creates a new ListWorkEstimatorConfig with default values.
-func defaultListWorkEstimatorConfig() *ListWorkEstimatorConfig {
+func newListWorkEstimatorConfig(objectsPerSeat float64) *ListWorkEstimatorConfig {
 	return &ListWorkEstimatorConfig{ObjectsPerSeat: objectsPerSeat}
 }
 

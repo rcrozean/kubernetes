@@ -28,11 +28,71 @@ import (
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
 )
 
+func TestCustomizingWorkEstimatorWithEnv(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.WatchList, true)
+	defaultWorkEstimatorConfig := &WorkEstimatorConfig{
+		MinimumSeats:                minimumSeats,
+		MaximumSeatsLimit:           defaultMaximumSeatsLimit,
+		ListWorkEstimatorConfig:     newListWorkEstimatorConfig(defaultObjectsPerSeat),
+		MutatingWorkEstimatorConfig: defaultMutatingWorkEstimatorConfig(),
+	}
+
+	tests := []struct {
+		name                 string
+		maxSeatsEnvStr       string
+		objectsPerSeatEnvStr string
+		expectedConfig       *WorkEstimatorConfig
+		error                error
+	}{
+		{
+			name:                 "no env vars set",
+			maxSeatsEnvStr:       "",
+			objectsPerSeatEnvStr: "",
+			expectedConfig:       defaultWorkEstimatorConfig,
+			error:                nil,
+		},
+		{
+			name:                 "env vars set to \"\"",
+			maxSeatsEnvStr:       "",
+			objectsPerSeatEnvStr: "",
+			expectedConfig:       defaultWorkEstimatorConfig,
+			error:                nil,
+		},
+		{
+			name:                 "valid custom WorkEstimatorConfig",
+			maxSeatsEnvStr:       "30",
+			objectsPerSeatEnvStr: "300",
+			expectedConfig: &WorkEstimatorConfig{
+				MinimumSeats:                minimumSeats,
+				MaximumSeatsLimit:           30,
+				ListWorkEstimatorConfig:     newListWorkEstimatorConfig(300.0),
+				MutatingWorkEstimatorConfig: defaultMutatingWorkEstimatorConfig(),
+			},
+			error: nil,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if test.name != "no env vars set" {
+				t.Setenv(maxSeatsLimitEnvVar, test.maxSeatsEnvStr)
+				t.Setenv(objectsPerSeatEnvVar, test.objectsPerSeatEnvStr)
+			}
+			cfg := NewWorkEstimatorConfig()
+
+			if cfg.MaximumSeatsLimit != test.expectedConfig.MaximumSeatsLimit {
+				t.Errorf("MaximumSeatsLimit not set properly: want %d, got %d", test.expectedConfig.MaximumSeatsLimit, cfg.MaximumSeatsLimit)
+			}
+			if cfg.ListWorkEstimatorConfig.ObjectsPerSeat != test.expectedConfig.ListWorkEstimatorConfig.ObjectsPerSeat {
+				t.Errorf("ObjectsPerSeat not set properly: want %f, got %f", test.expectedConfig.ListWorkEstimatorConfig.ObjectsPerSeat, cfg.ListWorkEstimatorConfig.ObjectsPerSeat)
+			}
+		})
+	}
+}
+
 func TestWorkEstimator(t *testing.T) {
 	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.WatchList, true)
-
-	defaultCfg := DefaultWorkEstimatorConfig()
-
+	// Will result in default WorkEstimatorConfig since no env vars are configured.
+	defaultCfg := NewWorkEstimatorConfig()
 	tests := []struct {
 		name                      string
 		requestURI                string
