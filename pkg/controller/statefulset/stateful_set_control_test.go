@@ -3906,10 +3906,12 @@ func parallelScaleUpStatefulSetControl(set *apps.StatefulSet,
 		return err
 	}
 
-	// Give up after 2 loops.
-	// 2 * 500 pods per loop = 1000 max pods <- this should be enough for all test cases.
+	// The controller creates at most MaxBatchSize Pods per sync, and a Pod is only counted in
+	// status.Replicas on the sync after it is observed with a phase. Allow one loop per MaxBatchSize
+	// Pods to create plus one loop to observe the last batch.
 	// Anything slower than that (requiring more iterations) indicates a problem and should fail the test.
-	maxLoops := 2
+	toCreate := int(*set.Spec.Replicas - set.Status.Replicas)
+	maxLoops := (toCreate+MaxBatchSize-1)/MaxBatchSize + 1
 	loops := maxLoops
 	for set.Status.Replicas < *set.Spec.Replicas {
 		if loops < 1 {
@@ -4876,6 +4878,138 @@ func TestStatefulSetMetrics(t *testing.T) {
 			}
 			if int(unavailableReplicasValue) != test.expectedUnavailableReplicasValue {
 				t.Errorf("Expected UnavailableReplicas gauge value %d, got %d", test.expectedUnavailableReplicasValue, int(unavailableReplicasValue))
+			}
+		})
+	}
+}
+
+func TestPartitionReplicas(t *testing.T) {
+	set := newStatefulSet(10)
+	set.Spec.Ordinals = &apps.StatefulSetOrdinals{Start: 2} // ordinal range is [2, 11]
+	rev := newRevisionOrDie(set, 1)
+
+	existingPod := func(ordinal int) *v1.Pod {
+		pod := newStatefulSetPod(set, ordinal)
+		pod.Status.Phase = v1.PodRunning
+		return pod
+	}
+	unparsable := existingPod(3)
+	unparsable.Name = "foo-not-an-ordinal"
+	pods := []*v1.Pod{existingPod(7), existingPod(0), existingPod(3), existingPod(12), unparsable}
+
+	ordinalsOf := func(pods []*v1.Pod) []int {
+		ords := make([]int, 0, len(pods))
+		for _, pod := range pods {
+			ords = append(ords, getOrdinal(pod))
+		}
+		return ords
+	}
+
+	for _, tc := range []struct {
+		name              string
+		maxCreate         int
+		wantOrdinals      []int
+		wantCreated       []int
+		wantPending       int
+		wantCondemnedOrds []int
+	}{
+		{
+			name:              "budget covers all missing ordinals: replicas is dense",
+			maxCreate:         100,
+			wantOrdinals:      []int{2, 3, 4, 5, 6, 7, 8, 9, 10, 11},
+			wantCreated:       []int{2, 4, 5, 6, 8, 9, 10, 11},
+			wantPending:       0,
+			wantCondemnedOrds: []int{0, 12},
+		},
+		{
+			name:              "budget of one builds only the lowest missing ordinal",
+			maxCreate:         1,
+			wantOrdinals:      []int{2, 3, 7},
+			wantCreated:       []int{2},
+			wantPending:       7,
+			wantCondemnedOrds: []int{0, 12},
+		},
+		{
+			name:              "budget is spent on the lowest missing ordinals across gaps",
+			maxCreate:         3,
+			wantOrdinals:      []int{2, 3, 4, 5, 7},
+			wantCreated:       []int{2, 4, 5},
+			wantPending:       5,
+			wantCondemnedOrds: []int{0, 12},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			replicas, condemned, pending := partitionReplicas(set, set, set, rev, rev, pods, tc.maxCreate)
+
+			if got := ordinalsOf(replicas); !slices.Equal(got, tc.wantOrdinals) {
+				t.Errorf("replicas ordinals: want %v, got %v", tc.wantOrdinals, got)
+			}
+			var created []int
+			for _, pod := range replicas {
+				if !isCreated(pod) {
+					created = append(created, getOrdinal(pod))
+				}
+			}
+			if !slices.Equal(created, tc.wantCreated) {
+				t.Errorf("newly built ordinals: want %v, got %v", tc.wantCreated, created)
+			}
+			if pending != tc.wantPending {
+				t.Errorf("pendingReplicas: want %d, got %d", tc.wantPending, pending)
+			}
+			gotCondemned := ordinalsOf(condemned)
+			slices.Sort(gotCondemned)
+			if !slices.Equal(gotCondemned, tc.wantCondemnedOrds) {
+				t.Errorf("condemned ordinals: want %v, got %v", tc.wantCondemnedOrds, gotCondemned)
+			}
+		})
+	}
+}
+
+// TestStatefulSetControlLargeReplicasBoundedWork verifies that the work done in a sync is bounded by the
+// number of Pods that can be created in that sync, not by spec.replicas. Before this was bounded, a single
+// sync of this StatefulSet allocated a slice of math.MaxInt32 Pods and built a Pod object for every ordinal.
+func TestStatefulSetControlLargeReplicasBoundedWork(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		parallel    bool
+		wantCreated int
+	}{
+		{name: "OrderedReady", parallel: false, wantCreated: 1},
+		{name: "Parallel", parallel: true, wantCreated: MaxBatchSize},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			set := newStatefulSet(math.MaxInt32)
+			if tc.parallel {
+				set = burst(set)
+			}
+			client := fake.NewSimpleClientset(set)
+			om, _, ssc := setupController(client)
+
+			status, err := ssc.UpdateStatefulSet(context.TODO(), set, nil, time.Now())
+			if err != nil {
+				t.Fatalf("UpdateStatefulSet: %v", err)
+			}
+			if got := om.createPodTracker.requests; got != tc.wantCreated {
+				t.Errorf("Pod create requests: want %d, got %d", tc.wantCreated, got)
+			}
+			selector, err := metav1.LabelSelectorAsSelector(set.Spec.Selector)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pods, err := om.podsLister.Pods(set.Namespace).List(selector)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(pods) != tc.wantCreated {
+				t.Errorf("Pods: want %d, got %d", tc.wantCreated, len(pods))
+			}
+			for _, pod := range pods {
+				if ord := getOrdinal(pod); ord < 0 || ord >= tc.wantCreated {
+					t.Errorf("Pod %s: want one of the lowest %d ordinals", pod.Name, tc.wantCreated)
+				}
+			}
+			if status.Replicas != 0 {
+				t.Errorf("status.Replicas: want 0 (created Pods are not observed yet), got %d", status.Replicas)
 			}
 		})
 	}

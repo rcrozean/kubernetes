@@ -582,6 +582,77 @@ func (ssc *defaultStatefulSetControl) processCondemnedPods(
 	return runForAll(condemned, processCondemnedFn, monotonic)
 }
 
+// maxReplicasToCreatePerSync returns how many missing ordinals updateStatefulSet may build and create in a
+// single sync. OrderedReady StatefulSets create at most one Pod per sync. Parallel StatefulSets are limited
+// to MaxBatchSize so that the work and memory used by a sync are bounded by the number of existing Pods,
+// not by set.Spec.Replicas.
+func maxReplicasToCreatePerSync(monotonic bool) int {
+	if monotonic {
+		return 1
+	}
+	return MaxBatchSize
+}
+
+// partitionReplicas splits pods into the replicas and condemned slices used by updateStatefulSet.
+//
+// replicas holds, in ascending ordinal order, every Pod whose ordinal is in the StatefulSet's range, plus
+// a newly built Pod for each of the lowest missing ordinals, up to maxCreate of them. Missing ordinals
+// beyond that limit are not built; their count is returned as pendingReplicas. When pendingReplicas is 0,
+// replicas is dense: len(replicas) == set.Spec.Replicas and replicas[i] has ordinal getStartOrdinal(set)+i.
+//
+// condemned holds every Pod with a valid ordinal outside the range, in no particular order. Pods whose
+// ordinal cannot be parsed are ignored.
+func partitionReplicas(
+	set, currentSet, updateSet *apps.StatefulSet,
+	currentRevision, updateRevision *apps.ControllerRevision,
+	pods []*v1.Pod,
+	maxCreate int,
+) (replicas, condemned []*v1.Pod, pendingReplicas int) {
+	start, end := getStartOrdinal(set), getEndOrdinal(set)
+	replicaCount := int(*set.Spec.Replicas)
+
+	condemned = make([]*v1.Pod, 0, len(pods))
+	existing := make(map[int]*v1.Pod, len(pods))
+	for _, pod := range pods {
+		if podInOrdinalRange(pod, set) {
+			existing[getOrdinal(pod)] = pod
+		} else if getOrdinal(pod) >= 0 {
+			condemned = append(condemned, pod)
+		}
+	}
+	existingOrdinals := make([]int, 0, len(existing))
+	for ord := range existing {
+		existingOrdinals = append(existingOrdinals, ord)
+	}
+	sort.Ints(existingOrdinals)
+
+	missing := replicaCount - len(existing)
+	toCreate := min(missing, maxCreate)
+	replicas = make([]*v1.Pod, 0, len(existing)+toCreate)
+	newPod := func(ord int) *v1.Pod {
+		return newVersionedStatefulSetPod(currentSet, updateSet, currentRevision.Name, updateRevision.Name, ord)
+	}
+
+	// Merge existing Pods with the lowest missing ordinals. Gaps between existing Pods are walked only
+	// while there is budget left to create Pods, so the cost is bounded by len(pods) + maxCreate.
+	created := 0
+	next := start
+	for _, ord := range existingOrdinals {
+		for ; next < ord && created < toCreate; next++ {
+			replicas = append(replicas, newPod(next))
+			created++
+		}
+		replicas = append(replicas, existing[ord])
+		next = ord + 1
+	}
+	for ; next <= end && created < toCreate; next++ {
+		replicas = append(replicas, newPod(next))
+		created++
+	}
+
+	return replicas, condemned, missing - created
+}
+
 func runForAll(pods []*v1.Pod, fn func(i int) (bool, error), monotonic bool) (bool, error) {
 	if monotonic {
 		for i := range pods {
@@ -637,39 +708,13 @@ func (ssc *defaultStatefulSetControl) updateStatefulSet(ctx context.Context, set
 
 	updateStatus(&status, set.Spec.MinReadySeconds, currentRevision, updateRevision, now, pods)
 
-	replicaCount := int(*set.Spec.Replicas)
-	// slice that will contain all Pods such that getStartOrdinal(set) <= getOrdinal(pod) <= getEndOrdinal(set)
-	replicas := make([]*v1.Pod, replicaCount)
-	// slice that will contain all Pods such that getOrdinal(pod) < getStartOrdinal(set) OR getOrdinal(pod) > getEndOrdinal(set)
-	condemned := make([]*v1.Pod, 0, len(pods))
+	monotonic := !allowsBurst(set)
+
+	// Only the missing ordinals that can be created in this sync are built, so the work done here is
+	// bounded by len(pods) plus the per-sync create limit rather than by set.Spec.Replicas.
+	replicas, condemned, pendingReplicas := partitionReplicas(set, currentSet, updateSet, currentRevision, updateRevision, pods, maxReplicasToCreatePerSync(monotonic))
 	unavailable := 0
 	var firstUnavailablePod *v1.Pod
-
-	// First we partition pods into two lists valid replicas and condemned Pods
-	for _, pod := range pods {
-		if podInOrdinalRange(pod, set) {
-			// if the ordinal of the pod is within the range of the current number of replicas,
-			// insert it at the indirection of its ordinal
-			replicas[getOrdinal(pod)-getStartOrdinal(set)] = pod
-		} else if getOrdinal(pod) >= 0 {
-			// if the ordinal is valid, but not within the range add it to the condemned list
-			condemned = append(condemned, pod)
-		}
-		// If the ordinal could not be parsed (ord < 0), ignore the Pod.
-	}
-
-	// for any empty indices in the sequence [0,set.Spec.Replicas) create a new Pod at the correct revision
-	start, end := getStartOrdinal(set), getEndOrdinal(set)
-	for ord := start; ord <= end; ord++ {
-		replicaIdx := ord - start
-		if replicas[replicaIdx] == nil {
-			replicas[replicaIdx] = newVersionedStatefulSetPod(
-				currentSet,
-				updateSet,
-				currentRevision.Name,
-				updateRevision.Name, ord)
-		}
-	}
 
 	// sort the condemned Pods by their ordinals
 	sort.Sort(descendingOrdinal(condemned))
@@ -683,6 +728,8 @@ func (ssc *defaultStatefulSetControl) updateStatefulSet(ctx context.Context, set
 			}
 		}
 	}
+	// Missing ordinals that were not built in this sync do not exist yet, so they are unavailable.
+	unavailable += pendingReplicas
 
 	// or the first unhealthy condemned Pod (condemned are sorted in descending order for ease of use)
 	for i := len(condemned) - 1; i >= 0; i-- {
@@ -703,8 +750,6 @@ func (ssc *defaultStatefulSetControl) updateStatefulSet(ctx context.Context, set
 	if set.DeletionTimestamp != nil {
 		return &status, nil
 	}
-
-	monotonic := !allowsBurst(set)
 
 	if set.Spec.UpdateStrategy.Type == apps.RecreateStatefulSetStrategyType {
 		if !utilfeature.DefaultFeatureGate.Enabled(features.StatefulSetRecreateStrategy) {
@@ -759,6 +804,15 @@ func (ssc *defaultStatefulSetControl) updateStatefulSet(ctx context.Context, set
 	if shouldExit, err := runForAll(replicas, processReplicaFn, monotonic); shouldExit || err != nil {
 		updateStatus(&status, set.Spec.MinReadySeconds, currentRevision, updateRevision, now, replicas, condemned)
 		return &status, err
+	}
+
+	// Some missing ordinals were not created in this sync because of the per-sync limit. Wait for the
+	// Pods created above to be observed (their events requeue the StatefulSet) before creating more or
+	// continuing with scale down and updates, which expect every ordinal in range to be present.
+	if pendingReplicas > 0 {
+		logger.V(4).Info("StatefulSet has Pods remaining to be created", "statefulSet", klog.KObj(set), "pendingReplicas", pendingReplicas)
+		updateStatus(&status, set.Spec.MinReadySeconds, currentRevision, updateRevision, now, replicas, condemned)
+		return &status, nil
 	}
 
 	// Preserve the existing processing order for OrderedReady StatefulSets.
